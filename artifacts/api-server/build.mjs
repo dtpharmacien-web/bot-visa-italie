@@ -30,6 +30,7 @@ async function buildAll() {
     external: [
       "*.node",
       "grammy",
+      "playwright-core",
       "sharp",
       "better-sqlite3",
       "sqlite3",

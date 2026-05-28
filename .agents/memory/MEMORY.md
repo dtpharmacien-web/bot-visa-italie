@@ -1,0 +1,2 @@
+- [grammy-esbuild](grammy-esbuild.md) — grammy must be externalized in build.mjs (platform.node file can't be bundled)
+- [vfs-global-scraping](vfs-global-scraping.md) — VFS Global blocks datacenter IPs; Chromium via Nix works on Replit but VFS still blocks; Railway/Render IPs should work
