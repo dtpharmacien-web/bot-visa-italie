@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y \
 ENV CHROMIUM_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
-RUN npm install -g pnpm
+RUN corepack enable && corepack prepare pnpm@10.26.1 --activate
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY tsconfig.base.json tsconfig.json ./
