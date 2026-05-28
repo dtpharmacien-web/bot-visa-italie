@@ -1,36 +1,72 @@
-# [Project name]
+# Bot Alertes Visa Italie — VFS Global Algérie
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Bot Telegram qui surveille les créneaux de rendez-vous visa Italie sur VFS Global en Algérie et envoie des alertes en temps réel aux abonnés.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/api-server run dev` — lancer le bot + serveur (port 5000)
+- `pnpm run typecheck` — vérification TypeScript complète
+- `pnpm run build` — typecheck + build de tous les packages
+- Required env: `TELEGRAM_BOT_TOKEN` — token du bot Telegram
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Bot: grammy (Telegram Bot Framework, native fetch)
+- Scraping: axios + cheerio
+- Scheduler: node-cron (toutes les 3 minutes)
+- Storage: JSON file (data/subscriptions.json)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/bot/` — tout le code du bot
+  - `index.ts` — commandes Telegram et lancement
+  - `scheduler.ts` — vérification périodique + notifications
+  - `scraper.ts` — scraping VFS Global
+  - `centres.ts` — liste des centres Algérie
+  - `storage.ts` — abonnements utilisateurs (fichier JSON)
+- `artifacts/api-server/data/subscriptions.json` — données persistantes
+- `railway.toml` — config déploiement Railway
+- `render.yaml` — config déploiement Render
+- `Dockerfile` — image Docker
+
+## Commandes du bot
+
+- `/start` ou `/aide` — aide et bienvenue
+- `/centres` — liste des centres disponibles (Alger, Constantine, Oran, Annaba, Tlemcen)
+- `/suivre <centre>` — s'abonner aux alertes d'un centre
+- `/arreter <centre>` — se désabonner
+- `/mesabonnements` — voir ses abonnements actifs
+- `/verifier <centre>` — vérifier la disponibilité maintenant
+
+## Déploiement 24/7 gratuit
+
+### Railway (recommandé)
+
+1. Créer un compte sur [railway.app](https://railway.app)
+2. New Project → Deploy from GitHub Repo (connecter ce repo)
+3. Ajouter la variable d'env `TELEGRAM_BOT_TOKEN` dans Railway
+4. Le fichier `railway.toml` configure tout automatiquement
+
+### Render (alternative)
+
+1. Créer un compte sur [render.com](https://render.com)
+2. New → Background Worker → connecter le repo
+3. Build Command: `npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build`
+4. Start Command: `node --enable-source-maps artifacts/api-server/dist/index.mjs`
+5. Ajouter `TELEGRAM_BOT_TOKEN` et `PORT=5000` dans Environment
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- grammy plutôt que telegraf : compatible Node.js 24+ (utilise le fetch natif, pas node-fetch)
+- grammy externalisé dans esbuild : le fichier `platform.node` de grammy ne peut pas être bundlé
+- Stockage JSON local : simple, sans base de données, portable pour Railway/Render
+- Vérification toutes les 3 min : équilibre entre réactivité et politesse vis-à-vis du serveur VFS
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Bot Telegram permettant aux citoyens algériens de recevoir des alertes immédiates quand des créneaux de rendez-vous visa Italie se libèrent sur VFS Global, par centre (Alger, Constantine, Oran, etc.).
 
 ## User preferences
 
@@ -38,8 +74,6 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- **grammy doit rester external dans build.mjs** — ne pas le retirer de la liste d'externals esbuild
+- Le scraper VFS Global peut nécessiter des ajustements si VFS change son API
+- Pour Railway : utiliser le type `worker` (pas `web`) pour éviter les sleep après inactivité HTTP
