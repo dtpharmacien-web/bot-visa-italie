@@ -25,6 +25,5 @@ app.listen(port, (err) => {
 });
 
 startBot().catch((err) => {
-  logger.error({ err }, "Failed to start Telegram bot");
-  process.exit(1);
+  logger.error({ err }, "Failed to start Telegram bot — server stays up");
 });
