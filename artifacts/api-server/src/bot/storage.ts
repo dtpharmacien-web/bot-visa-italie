@@ -12,9 +12,20 @@ export interface Subscription {
   subscribedAt: string;
 }
 
+export interface DetectionEvent {
+  centreId: string;
+  detectedAt: string;
+  slots?: string[];
+}
+
 interface StorageData {
   subscriptions: Subscription[];
   lastAvailability: Record<string, boolean>;
+  detectionHistory: DetectionEvent[];
+  stats: {
+    totalAlertsSent: number;
+    totalChecks: number;
+  };
 }
 
 function ensureDataDir() {
@@ -27,13 +38,19 @@ function ensureDataDir() {
 function load(): StorageData {
   ensureDataDir();
   if (!fs.existsSync(DATA_FILE)) {
-    return { subscriptions: [], lastAvailability: {} };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
   }
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
-    return JSON.parse(raw) as StorageData;
+    const parsed = JSON.parse(raw) as Partial<StorageData>;
+    return {
+      subscriptions: parsed.subscriptions ?? [],
+      lastAvailability: parsed.lastAvailability ?? {},
+      detectionHistory: parsed.detectionHistory ?? [],
+      stats: parsed.stats ?? { totalAlertsSent: 0, totalChecks: 0 },
+    };
   } catch {
-    return { subscriptions: [], lastAvailability: {} };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
   }
 }
 
@@ -90,4 +107,53 @@ export function setLastAvailability(centreId: string, available: boolean) {
   const data = load();
   data.lastAvailability[centreId] = available;
   save(data);
+}
+
+export function recordDetection(centreId: string, slots: string[] = []) {
+  const data = load();
+  data.detectionHistory.push({
+    centreId,
+    detectedAt: new Date().toISOString(),
+    slots,
+  });
+  // Garder max 500 événements pour éviter un fichier trop lourd
+  if (data.detectionHistory.length > 500) {
+    data.detectionHistory = data.detectionHistory.slice(-500);
+  }
+  save(data);
+}
+
+export function getDetectionHistory(centreId?: string): DetectionEvent[] {
+  const data = load();
+  if (!centreId) return data.detectionHistory;
+  return data.detectionHistory.filter((e) => e.centreId === centreId);
+}
+
+export function incrementAlertsSent(count = 1) {
+  const data = load();
+  data.stats.totalAlertsSent += count;
+  save(data);
+}
+
+export function incrementChecks() {
+  const data = load();
+  data.stats.totalChecks += 1;
+  save(data);
+}
+
+export function getStats() {
+  const data = load();
+  const uniqueUsers = new Set(data.subscriptions.map((s) => s.chatId)).size;
+  const byCentre: Record<string, number> = {};
+  for (const sub of data.subscriptions) {
+    byCentre[sub.centreName] = (byCentre[sub.centreName] ?? 0) + 1;
+  }
+  return {
+    totalSubscriptions: data.subscriptions.length,
+    uniqueUsers,
+    byCentre,
+    totalAlertsSent: data.stats.totalAlertsSent,
+    totalChecks: data.stats.totalChecks,
+    totalDetections: data.detectionHistory.length,
+  };
 }
