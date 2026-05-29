@@ -199,7 +199,8 @@ export async function checkCentreAvailability(centre: Centre): Promise<ScrapeRes
 
     await page.waitForTimeout(3000);
 
-    const bodyText = await page.evaluate(() => document.body?.innerText ?? "");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bodyText = await page.evaluate(() => (globalThis as any).document.body?.innerText ?? "") as string;
     const pageContent = await page.content();
 
     let available: boolean;
