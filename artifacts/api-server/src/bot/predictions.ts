@@ -206,6 +206,94 @@ export function formatPredictionMessage(pred: CentrePrediction): string {
   return msg;
 }
 
+export function getTodayScore(centreId: string, centreName: string): { score: number; reasons: string[]; bestHours: string; confidence: PredictionWindow["confidence"] } {
+  const realHistory = getDetectionHistory(centreId);
+  const seedHistory = SEED_EVENTS.filter((e) => e.centreId === centreId);
+  const allEvents = [...seedHistory, ...realHistory];
+
+  const dates = allEvents.map((e) => new Date(e.detectedAt));
+  const domFreq = countFreq(dates.map((d) => d.getUTCDate()));
+  const dowFreq = countFreq(dates.map((d) => d.getUTCDay()));
+  const hourFreq = countFreq(dates.map((d) => d.getUTCHours()));
+  const maxDom = Math.max(0, ...domFreq.values());
+  const maxDow = Math.max(0, ...dowFreq.values());
+
+  const today = new Date();
+  const dom = today.getDate();
+  const dow = today.getDay();
+
+  const domScore = normalize(domFreq.get(dom) ?? 0, maxDom);
+  const dowScore = normalize(dowFreq.get(dow) ?? 0, maxDow);
+  const bonusDom = dom === 1 ? 30 : dom === 15 ? 28 : dom === 16 ? 15 : dom === 2 ? 10 : 0;
+  const bonusDow = dow === 2 ? 15 : dow === 3 ? 12 : dow === 1 ? 8 : 0;
+  const penaltyWeekend = (dow === 0 || dow === 6) ? -40 : 0;
+  const score = Math.max(0, Math.min(100, Math.round((domScore * 0.5) + (dowScore * 0.3) + bonusDom + bonusDow + penaltyWeekend)));
+
+  const reasons: string[] = [];
+  if (dom === 1) reasons.push("1er du mois — ouverture fréquente");
+  else if (dom === 15) reasons.push("15 du mois — ouverture fréquente");
+  else if (dom === 16) reasons.push("Proche du 15");
+  else if (dom === 2) reasons.push("Proche du 1er");
+  if (domFreq.has(dom)) reasons.push(`Jour ${dom} historiquement actif`);
+  if (dow === 2) reasons.push("Mardi — favori VFS");
+  else if (dow === 3) reasons.push("Mercredi — fréquent");
+  if (penaltyWeekend < 0) reasons.push("Week-end — peu probable");
+  if (reasons.length === 0) reasons.push("Jour ordinaire");
+
+  const sortedHours = [...hourFreq.entries()].sort((a, b) => b[1] - a[1]);
+  const topHours = sortedHours.slice(0, 2).map(([h]) => h).sort((a, b) => a - b);
+  const bestHours = topHours.length > 0
+    ? `${topHours[0]}h00 – ${(topHours[topHours.length - 1] ?? topHours[0]) + 1}h00`
+    : "9h00 – 11h00";
+
+  const confidence: PredictionWindow["confidence"] = score >= 60 ? "haute" : score >= 35 ? "moyenne" : "faible";
+
+  return { score, reasons, bestHours, confidence };
+}
+
+export function buildMorningBriefing(centreIds: string[], centreNames: Record<string, string>): string {
+  const today = new Date();
+  const dateStr = today.toLocaleDateString("fr-FR", {
+    weekday: "long", day: "numeric", month: "long", timeZone: "Africa/Algiers"
+  });
+
+  const centreEmojis: Record<string, string> = {
+    alger: "🏙️", constantine: "🏛️", oran: "🌊", annaba: "🌲", tlemcen: "🕌",
+  };
+
+  let msg = `☀️ <b>Bonjour ! Briefing Visa Italie du ${dateStr}</b>\n\n`;
+  msg += `📊 <b>Probabilités d'ouverture aujourd'hui :</b>\n\n`;
+
+  const rows = centreIds.map((id) => {
+    const name = centreNames[id] ?? id;
+    const { score, reasons, bestHours, confidence } = getTodayScore(id, name);
+    return { id, name, score, reasons, bestHours, confidence };
+  }).sort((a, b) => b.score - a.score);
+
+  const confEmoji: Record<string, string> = { haute: "🟢", moyenne: "🟡", faible: "🔴" };
+
+  for (const row of rows) {
+    const bar = "█".repeat(Math.round(row.score / 10)) + "░".repeat(10 - Math.round(row.score / 10));
+    const emoji = centreEmojis[row.id] ?? "📍";
+    msg += `${emoji} <b>${row.name.split(" ")[0]}</b>  ${confEmoji[row.confidence]} ${row.score}%\n`;
+    msg += `   ${bar}\n`;
+    msg += `   <i>${row.reasons[0]}</i>\n`;
+    msg += `   ⏰ Heure conseillée : <b>${row.bestHours}</b>\n\n`;
+  }
+
+  // Meilleur créneau du jour
+  const best = rows[0];
+  if (best && best.score >= 35) {
+    msg += `💡 <b>Conseil du jour :</b> Surveillez particulièrement <b>${best.name.split(" ")[0]}</b> ce matin entre <b>${best.bestHours}</b>.\n\n`;
+  } else {
+    msg += `💡 <b>Conseil du jour :</b> Probabilité modérée aujourd'hui — le bot surveille toutes les 3 min, vous serez alerté immédiatement.\n\n`;
+  }
+
+  msg += `<a href="https://visa.vfsglobal.com/dza/en/ita/book-an-appointment">🔗 VFS Global — Réservation</a>\n`;
+  msg += `<i>Pour désactiver ce rappel : /rappel</i>`;
+  return msg;
+}
+
 export function formatAllCentresPrediction(): string {
   let msg = `🔮 <b>Prédictions globales — Tous les centres</b>\n\n`;
 
