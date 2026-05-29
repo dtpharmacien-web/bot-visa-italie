@@ -6,6 +6,7 @@ import {
   removeSubscription,
   getUserSubscriptions,
   getStats,
+  toggleDailyReminder,
 } from "./storage.js";
 import { checkCentreAvailability } from "./scraper.js";
 import { startScheduler } from "./scheduler.js";
@@ -254,6 +255,36 @@ export function createBot(): Bot {
     });
   });
 
+  bot.command("rappel", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const subs = getUserSubscriptions(chatId);
+    if (subs.length === 0) {
+      return ctx.reply(
+        "📭 <b>Aucun abonnement actif</b>\n\nAbonnez-vous à un centre d'abord pour recevoir le rappel matinal.",
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    }
+    const isNowEnabled = toggleDailyReminder(chatId);
+    if (isNowEnabled) {
+      return ctx.reply(
+        `☀️ <b>Rappel matinal activé !</b>\n\n` +
+        `Chaque matin à <b>8h00</b>, vous recevrez un briefing avec :\n` +
+        `  • Les probabilités d'ouverture du jour pour vos centres\n` +
+        `  • L'heure conseillée pour surveiller\n` +
+        `  • Un conseil personnalisé\n\n` +
+        `<i>Tapez /rappel à nouveau pour le désactiver.</i>`,
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    } else {
+      return ctx.reply(
+        `🔕 <b>Rappel matinal désactivé</b>\n\n` +
+        `Vous ne recevrez plus le briefing du matin.\n` +
+        `<i>Tapez /rappel à nouveau pour le réactiver.</i>`,
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    }
+  });
+
   bot.command("tout", async (ctx) => {
     const chatId = ctx.chat.id;
     let count = 0;
@@ -330,6 +361,32 @@ export function createBot(): Bot {
         parse_mode: "HTML",
         reply_markup: backToMenuKeyboard(),
       });
+    } else if (action === "rappel") {
+      const subs = getUserSubscriptions(ctx.from.id);
+      if (subs.length === 0) {
+        await ctx.editMessageText(
+          "📭 <b>Aucun abonnement actif</b>\n\nAbonnez-vous à un centre d'abord pour recevoir le rappel matinal.",
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+        return;
+      }
+      const isNowEnabled = toggleDailyReminder(ctx.from.id);
+      if (isNowEnabled) {
+        await ctx.editMessageText(
+          `☀️ <b>Rappel matinal activé !</b>\n\n` +
+          `Chaque matin à <b>8h00</b>, vous recevrez un briefing avec :\n` +
+          `  • Les probabilités d'ouverture du jour pour vos centres\n` +
+          `  • L'heure conseillée pour surveiller\n` +
+          `  • Un conseil personnalisé\n\n` +
+          `<i>Appuyez sur ☀️ Rappel matinal à nouveau pour le désactiver.</i>`,
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+      } else {
+        await ctx.editMessageText(
+          `🔕 <b>Rappel matinal désactivé</b>\n\nVous ne recevrez plus le briefing du matin.\n<i>Appuyez sur ☀️ Rappel matinal à nouveau pour le réactiver.</i>`,
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+      }
     }
   });
 
@@ -435,10 +492,11 @@ async function registerCommands(bot: Bot) {
     { command: "start",          description: "🏠 Menu principal" },
     { command: "suivre",         description: "🔔 S'abonner aux alertes d'un centre" },
     { command: "arreter",        description: "🔕 Arrêter les alertes d'un centre" },
-    { command: "tout",           description: "🔔 S'abonner à TOUS les centres" },
+    { command: "tout",           description: "🌍 S'abonner à TOUS les centres" },
     { command: "mesabonnements", description: "📋 Voir mes abonnements actifs" },
     { command: "verifier",       description: "🔍 Vérifier la disponibilité maintenant" },
     { command: "prediction",     description: "🔮 Prédictions d'ouverture des créneaux" },
+    { command: "rappel",         description: "☀️ Activer/désactiver le briefing matinal" },
     { command: "centres",        description: "📍 Liste des centres disponibles" },
     { command: "stats",          description: "📊 Statistiques du bot" },
     { command: "aide",           description: "❓ Aide et informations" },
