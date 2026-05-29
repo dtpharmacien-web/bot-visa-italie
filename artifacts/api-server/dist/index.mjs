@@ -33776,7 +33776,7 @@ function ensureDataDir() {
 function load() {
   ensureDataDir();
   if (!fs.existsSync(DATA_FILE)) {
-    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], dailyReminderOptOut: [], stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0 } };
   }
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
@@ -33785,15 +33785,39 @@ function load() {
       subscriptions: parsed.subscriptions ?? [],
       lastAvailability: parsed.lastAvailability ?? {},
       detectionHistory: parsed.detectionHistory ?? [],
-      stats: parsed.stats ?? { totalAlertsSent: 0, totalChecks: 0 }
+      dailyReminderOptOut: parsed.dailyReminderOptOut ?? [],
+      stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0, ...parsed.stats }
     };
   } catch {
-    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], dailyReminderOptOut: [], stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0 } };
   }
 }
 function save(data) {
   ensureDataDir();
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+}
+function toggleDailyReminder(chatId) {
+  const data = load();
+  const idx = data.dailyReminderOptOut.indexOf(chatId);
+  if (idx === -1) {
+    data.dailyReminderOptOut.push(chatId);
+    save(data);
+    return false;
+  } else {
+    data.dailyReminderOptOut.splice(idx, 1);
+    save(data);
+    return true;
+  }
+}
+function getAllDailyReminderRecipients() {
+  const data = load();
+  const allUsers = [...new Set(data.subscriptions.map((s) => s.chatId))];
+  return allUsers.filter((id) => !data.dailyReminderOptOut.includes(id));
+}
+function incrementRemindersSent(count = 1) {
+  const data = load();
+  data.stats.totalRemindersSent = (data.stats.totalRemindersSent ?? 0) + count;
+  save(data);
 }
 function addSubscription(chatId, centreId, centreName) {
   const data = load();
@@ -34069,148 +34093,6 @@ async function checkCentreAvailability(centre) {
 
 // src/bot/scheduler.ts
 var import_node_cron = __toESM(require_node_cron(), 1);
-function buildAlertMessage(centreName, slots) {
-  const now = (/* @__PURE__ */ new Date()).toLocaleString("fr-FR", {
-    timeZone: "Africa/Algiers",
-    day: "numeric",
-    month: "long",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-  let msg = `\u{1F6A8}\u{1F1EE}\u{1F1F9} <b>CR\xC9NEAUX DISPONIBLES \u2014 ${centreName.toUpperCase()}</b> \u{1F6A8}
-
-`;
-  msg += `\u2705 Des rendez-vous visa Italie sont <b>DISPONIBLES MAINTENANT</b> !
-
-`;
-  if (slots.length > 0) {
-    msg += `\u{1F4C5} <b>Dates disponibles :</b>
-`;
-    for (const slot of slots.slice(0, 5)) {
-      msg += `  \u2022 ${slot}
-`;
-    }
-    if (slots.length > 5) {
-      msg += `  <i>...et ${slots.length - 5} autre(s)</i>
-`;
-    }
-    msg += "\n";
-  }
-  msg += `<a href="https://visa.vfsglobal.com/dza/en/ita/book-an-appointment">\u{1F517} R\xE9server maintenant sur VFS Global</a>
-
-`;
-  msg += `\u26A1 <b>Agissez vite \u2014 les cr\xE9neaux partent en quelques minutes !</b>
-`;
-  msg += `<i>D\xE9tect\xE9 le ${now}</i>`;
-  return msg;
-}
-function buildRecoveryMessage(centreName) {
-  return `\u2139\uFE0F <b>Visa Italie \u2014 ${centreName}</b>
-
-\u274C Les cr\xE9neaux ne sont plus disponibles pour le moment.
-
-<i>Vous serez notifi\xE9 automatiquement d\xE8s qu'un nouveau cr\xE9neau appara\xEEt.
-V\xE9rification toutes les 3 minutes.</i>`;
-}
-function startScheduler(bot) {
-  logger.info("Starting VFS appointment scheduler (every 3 minutes)");
-  import_node_cron.default.schedule("*/3 * * * *", async () => {
-    logger.info("Scheduler tick \u2014 checking subscribed centres");
-    incrementChecks();
-    const subscribedCentreIds = getAllSubscribedCentres();
-    if (subscribedCentreIds.length === 0) {
-      logger.info("No subscribed centres, skipping check");
-      return;
-    }
-    for (const centreId of subscribedCentreIds) {
-      const centre = getCentreById(centreId) ?? CENTRES.find((c) => c.id === centreId);
-      if (!centre) continue;
-      try {
-        const result = await checkCentreAvailability(centre);
-        const wasAvailable = getLastAvailability(centreId);
-        const isNowAvailable = result.available;
-        if (isNowAvailable && wasAvailable !== true) {
-          logger.info({ centreId, slots: result.slots }, "Appointments AVAILABLE \u2014 notifying subscribers");
-          recordDetection(centreId, result.slots);
-          const subscribers = getSubscribersByCentre(centreId);
-          const message = buildAlertMessage(result.centreName, result.slots);
-          let sent = 0;
-          for (const chatId of subscribers) {
-            try {
-              await bot.api.sendMessage(chatId, message, { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
-              sent++;
-            } catch (err) {
-              logger.error({ err, chatId }, "Failed to send alert to subscriber");
-            }
-          }
-          incrementAlertsSent(sent);
-          setLastAvailability(centreId, true);
-        } else if (!isNowAvailable && wasAvailable === true) {
-          logger.info({ centreId }, "Appointments no longer available \u2014 notifying subscribers");
-          const subscribers = getSubscribersByCentre(centreId);
-          const message = buildRecoveryMessage(result.centreName);
-          for (const chatId of subscribers) {
-            try {
-              await bot.api.sendMessage(chatId, message, { parse_mode: "HTML" });
-            } catch (err) {
-              logger.error({ err, chatId }, "Failed to send recovery notification");
-            }
-          }
-          setLastAvailability(centreId, false);
-        } else {
-          setLastAvailability(centreId, isNowAvailable);
-          logger.info({ centreId, available: isNowAvailable }, "No status change");
-        }
-      } catch (err) {
-        logger.error({ err, centreId }, "Error checking centre");
-      }
-      await new Promise((r) => setTimeout(r, 2e3));
-    }
-  });
-}
-
-// src/bot/keyboards.ts
-import { InlineKeyboard } from "grammy";
-function centreSelectionKeyboard(action) {
-  const kb = new InlineKeyboard();
-  const emoji = {
-    alger: "\u{1F3D9}\uFE0F",
-    constantine: "\u{1F3DB}\uFE0F",
-    oran: "\u{1F30A}",
-    annaba: "\u{1F332}",
-    tlemcen: "\u{1F54C}"
-  };
-  CENTRES.forEach((c, i) => {
-    kb.text(`${emoji[c.id] ?? "\u{1F4CD}"} ${c.name}`, `${action}:${c.id}`);
-    if ((i + 1) % 2 === 0) kb.row();
-  });
-  return kb;
-}
-function mainMenuKeyboard() {
-  return new InlineKeyboard().text("\u{1F514} S'abonner \xE0 un centre", "menu:suivre").row().text("\u{1F50D} V\xE9rifier maintenant", "menu:verifier").row().text("\u{1F52E} Pr\xE9dictions d'ouverture", "menu:prediction").row().text("\u{1F4CB} Mes abonnements", "menu:mesabonnements").row().text("\u{1F4CD} Tous les centres", "menu:centres");
-}
-function subscriptionKeyboard(subscribedIds) {
-  const kb = new InlineKeyboard();
-  const emoji = {
-    alger: "\u{1F3D9}\uFE0F",
-    constantine: "\u{1F3DB}\uFE0F",
-    oran: "\u{1F30A}",
-    annaba: "\u{1F332}",
-    tlemcen: "\u{1F54C}"
-  };
-  CENTRES.forEach((c, i) => {
-    const isSubscribed = subscribedIds.includes(c.id);
-    const label = isSubscribed ? `\u2705 ${c.name}` : `${emoji[c.id] ?? "\u{1F4CD}"} ${c.name}`;
-    const callbackData = isSubscribed ? `arreter:${c.id}` : `suivre:${c.id}`;
-    kb.text(label, callbackData);
-    if ((i + 1) % 2 === 0) kb.row();
-  });
-  kb.row().text("\u{1F514} Tout suivre", "suivre:tous");
-  return kb;
-}
-function backToMenuKeyboard() {
-  return new InlineKeyboard().text("\u25C0\uFE0F Menu principal", "menu:accueil");
-}
 
 // src/bot/predictions.ts
 var SEED_EVENTS = [
@@ -34367,6 +34249,96 @@ ${emoji} <b>${dayName} ${dateStr}</b> \u2014 ${w.score}% de chance
 <i>\u{1F4C8} Bas\xE9 sur ${pred.dataPoints} \xE9v\xE9nements historiques. Les pr\xE9dictions s'am\xE9liorent avec le temps.</i>`;
   return msg;
 }
+function getTodayScore(centreId, centreName) {
+  const realHistory = getDetectionHistory(centreId);
+  const seedHistory = SEED_EVENTS.filter((e) => e.centreId === centreId);
+  const allEvents = [...seedHistory, ...realHistory];
+  const dates = allEvents.map((e) => new Date(e.detectedAt));
+  const domFreq = countFreq(dates.map((d) => d.getUTCDate()));
+  const dowFreq = countFreq(dates.map((d) => d.getUTCDay()));
+  const hourFreq = countFreq(dates.map((d) => d.getUTCHours()));
+  const maxDom = Math.max(0, ...domFreq.values());
+  const maxDow = Math.max(0, ...dowFreq.values());
+  const today = /* @__PURE__ */ new Date();
+  const dom = today.getDate();
+  const dow = today.getDay();
+  const domScore = normalize(domFreq.get(dom) ?? 0, maxDom);
+  const dowScore = normalize(dowFreq.get(dow) ?? 0, maxDow);
+  const bonusDom = dom === 1 ? 30 : dom === 15 ? 28 : dom === 16 ? 15 : dom === 2 ? 10 : 0;
+  const bonusDow = dow === 2 ? 15 : dow === 3 ? 12 : dow === 1 ? 8 : 0;
+  const penaltyWeekend = dow === 0 || dow === 6 ? -40 : 0;
+  const score = Math.max(0, Math.min(100, Math.round(domScore * 0.5 + dowScore * 0.3 + bonusDom + bonusDow + penaltyWeekend)));
+  const reasons = [];
+  if (dom === 1) reasons.push("1er du mois \u2014 ouverture fr\xE9quente");
+  else if (dom === 15) reasons.push("15 du mois \u2014 ouverture fr\xE9quente");
+  else if (dom === 16) reasons.push("Proche du 15");
+  else if (dom === 2) reasons.push("Proche du 1er");
+  if (domFreq.has(dom)) reasons.push(`Jour ${dom} historiquement actif`);
+  if (dow === 2) reasons.push("Mardi \u2014 favori VFS");
+  else if (dow === 3) reasons.push("Mercredi \u2014 fr\xE9quent");
+  if (penaltyWeekend < 0) reasons.push("Week-end \u2014 peu probable");
+  if (reasons.length === 0) reasons.push("Jour ordinaire");
+  const sortedHours = [...hourFreq.entries()].sort((a, b) => b[1] - a[1]);
+  const topHours = sortedHours.slice(0, 2).map(([h]) => h).sort((a, b) => a - b);
+  const bestHours = topHours.length > 0 ? `${topHours[0]}h00 \u2013 ${(topHours[topHours.length - 1] ?? topHours[0]) + 1}h00` : "9h00 \u2013 11h00";
+  const confidence = score >= 60 ? "haute" : score >= 35 ? "moyenne" : "faible";
+  return { score, reasons, bestHours, confidence };
+}
+function buildMorningBriefing(centreIds, centreNames) {
+  const today = /* @__PURE__ */ new Date();
+  const dateStr = today.toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "Africa/Algiers"
+  });
+  const centreEmojis = {
+    alger: "\u{1F3D9}\uFE0F",
+    constantine: "\u{1F3DB}\uFE0F",
+    oran: "\u{1F30A}",
+    annaba: "\u{1F332}",
+    tlemcen: "\u{1F54C}"
+  };
+  let msg = `\u2600\uFE0F <b>Bonjour ! Briefing Visa Italie du ${dateStr}</b>
+
+`;
+  msg += `\u{1F4CA} <b>Probabilit\xE9s d'ouverture aujourd'hui :</b>
+
+`;
+  const rows = centreIds.map((id) => {
+    const name = centreNames[id] ?? id;
+    const { score, reasons, bestHours, confidence } = getTodayScore(id, name);
+    return { id, name, score, reasons, bestHours, confidence };
+  }).sort((a, b) => b.score - a.score);
+  const confEmoji = { haute: "\u{1F7E2}", moyenne: "\u{1F7E1}", faible: "\u{1F534}" };
+  for (const row of rows) {
+    const bar = "\u2588".repeat(Math.round(row.score / 10)) + "\u2591".repeat(10 - Math.round(row.score / 10));
+    const emoji = centreEmojis[row.id] ?? "\u{1F4CD}";
+    msg += `${emoji} <b>${row.name.split(" ")[0]}</b>  ${confEmoji[row.confidence]} ${row.score}%
+`;
+    msg += `   ${bar}
+`;
+    msg += `   <i>${row.reasons[0]}</i>
+`;
+    msg += `   \u23F0 Heure conseill\xE9e : <b>${row.bestHours}</b>
+
+`;
+  }
+  const best = rows[0];
+  if (best && best.score >= 35) {
+    msg += `\u{1F4A1} <b>Conseil du jour :</b> Surveillez particuli\xE8rement <b>${best.name.split(" ")[0]}</b> ce matin entre <b>${best.bestHours}</b>.
+
+`;
+  } else {
+    msg += `\u{1F4A1} <b>Conseil du jour :</b> Probabilit\xE9 mod\xE9r\xE9e aujourd'hui \u2014 le bot surveille toutes les 3 min, vous serez alert\xE9 imm\xE9diatement.
+
+`;
+  }
+  msg += `<a href="https://visa.vfsglobal.com/dza/en/ita/book-an-appointment">\u{1F517} VFS Global \u2014 R\xE9servation</a>
+`;
+  msg += `<i>Pour d\xE9sactiver ce rappel : /rappel</i>`;
+  return msg;
+}
 function formatAllCentresPrediction() {
   let msg = `\u{1F52E} <b>Pr\xE9dictions globales \u2014 Tous les centres</b>
 
@@ -34397,6 +34369,179 @@ function formatAllCentresPrediction() {
   }
   msg += `<i>Conseil : activez les alertes sur tous les centres avec /tout pour ne rien manquer.</i>`;
   return msg;
+}
+
+// src/bot/scheduler.ts
+function buildAlertMessage(centreName, slots) {
+  const now = (/* @__PURE__ */ new Date()).toLocaleString("fr-FR", {
+    timeZone: "Africa/Algiers",
+    day: "numeric",
+    month: "long",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  let msg = `\u{1F6A8}\u{1F1EE}\u{1F1F9} <b>CR\xC9NEAUX DISPONIBLES \u2014 ${centreName.toUpperCase()}</b> \u{1F6A8}
+
+`;
+  msg += `\u2705 Des rendez-vous visa Italie sont <b>DISPONIBLES MAINTENANT</b> !
+
+`;
+  if (slots.length > 0) {
+    msg += `\u{1F4C5} <b>Dates disponibles :</b>
+`;
+    for (const slot of slots.slice(0, 5)) {
+      msg += `  \u2022 ${slot}
+`;
+    }
+    if (slots.length > 5) {
+      msg += `  <i>...et ${slots.length - 5} autre(s)</i>
+`;
+    }
+    msg += "\n";
+  }
+  msg += `<a href="https://visa.vfsglobal.com/dza/en/ita/book-an-appointment">\u{1F517} R\xE9server maintenant sur VFS Global</a>
+
+`;
+  msg += `\u26A1 <b>Agissez vite \u2014 les cr\xE9neaux partent en quelques minutes !</b>
+`;
+  msg += `<i>D\xE9tect\xE9 le ${now}</i>`;
+  return msg;
+}
+function buildRecoveryMessage(centreName) {
+  return `\u2139\uFE0F <b>Visa Italie \u2014 ${centreName}</b>
+
+\u274C Les cr\xE9neaux ne sont plus disponibles pour le moment.
+
+<i>Vous serez notifi\xE9 automatiquement d\xE8s qu'un nouveau cr\xE9neau appara\xEEt.
+V\xE9rification toutes les 3 minutes.</i>`;
+}
+function startScheduler(bot) {
+  logger.info("Starting VFS appointment scheduler (every 3 minutes) + daily briefing (08:00 Algeria)");
+  import_node_cron.default.schedule("0 7 * * *", async () => {
+    logger.info("Daily morning briefing \u2014 sending to all opted-in subscribers");
+    const recipients = getAllDailyReminderRecipients();
+    if (recipients.length === 0) {
+      logger.info("No daily reminder recipients");
+      return;
+    }
+    let sent = 0;
+    for (const chatId of recipients) {
+      try {
+        const subs = getUserSubscriptions(chatId);
+        if (subs.length === 0) continue;
+        const centreIds = [...new Set(subs.map((s) => s.centreId))];
+        const centreNames = {};
+        for (const s of subs) centreNames[s.centreId] = s.centreName;
+        const briefing = buildMorningBriefing(centreIds, centreNames);
+        await bot.api.sendMessage(chatId, briefing, {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true }
+        });
+        sent++;
+      } catch (err) {
+        logger.error({ err, chatId }, "Failed to send daily briefing");
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    incrementRemindersSent(sent);
+    logger.info({ sent }, "Daily morning briefing sent");
+  }, { timezone: "Africa/Algiers" });
+  import_node_cron.default.schedule("*/3 * * * *", async () => {
+    logger.info("Scheduler tick \u2014 checking subscribed centres");
+    incrementChecks();
+    const subscribedCentreIds = getAllSubscribedCentres();
+    if (subscribedCentreIds.length === 0) {
+      logger.info("No subscribed centres, skipping check");
+      return;
+    }
+    for (const centreId of subscribedCentreIds) {
+      const centre = getCentreById(centreId) ?? CENTRES.find((c) => c.id === centreId);
+      if (!centre) continue;
+      try {
+        const result = await checkCentreAvailability(centre);
+        const wasAvailable = getLastAvailability(centreId);
+        const isNowAvailable = result.available;
+        if (isNowAvailable && wasAvailable !== true) {
+          logger.info({ centreId, slots: result.slots }, "Appointments AVAILABLE \u2014 notifying subscribers");
+          recordDetection(centreId, result.slots);
+          const subscribers = getSubscribersByCentre(centreId);
+          const message = buildAlertMessage(result.centreName, result.slots);
+          let sent = 0;
+          for (const chatId of subscribers) {
+            try {
+              await bot.api.sendMessage(chatId, message, { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+              sent++;
+            } catch (err) {
+              logger.error({ err, chatId }, "Failed to send alert to subscriber");
+            }
+          }
+          incrementAlertsSent(sent);
+          setLastAvailability(centreId, true);
+        } else if (!isNowAvailable && wasAvailable === true) {
+          logger.info({ centreId }, "Appointments no longer available \u2014 notifying subscribers");
+          const subscribers = getSubscribersByCentre(centreId);
+          const message = buildRecoveryMessage(result.centreName);
+          for (const chatId of subscribers) {
+            try {
+              await bot.api.sendMessage(chatId, message, { parse_mode: "HTML" });
+            } catch (err) {
+              logger.error({ err, chatId }, "Failed to send recovery notification");
+            }
+          }
+          setLastAvailability(centreId, false);
+        } else {
+          setLastAvailability(centreId, isNowAvailable);
+          logger.info({ centreId, available: isNowAvailable }, "No status change");
+        }
+      } catch (err) {
+        logger.error({ err, centreId }, "Error checking centre");
+      }
+      await new Promise((r) => setTimeout(r, 2e3));
+    }
+  });
+}
+
+// src/bot/keyboards.ts
+import { InlineKeyboard } from "grammy";
+function centreSelectionKeyboard(action) {
+  const kb = new InlineKeyboard();
+  const emoji = {
+    alger: "\u{1F3D9}\uFE0F",
+    constantine: "\u{1F3DB}\uFE0F",
+    oran: "\u{1F30A}",
+    annaba: "\u{1F332}",
+    tlemcen: "\u{1F54C}"
+  };
+  CENTRES.forEach((c, i) => {
+    kb.text(`${emoji[c.id] ?? "\u{1F4CD}"} ${c.name}`, `${action}:${c.id}`);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  return kb;
+}
+function mainMenuKeyboard() {
+  return new InlineKeyboard().text("\u{1F514} S'abonner \xE0 un centre", "menu:suivre").row().text("\u{1F30D} Tout suivre d'un coup", "suivre:tous").row().text("\u{1F50D} V\xE9rifier maintenant", "menu:verifier").row().text("\u{1F52E} Pr\xE9dictions d'ouverture", "menu:prediction").row().text("\u2600\uFE0F Rappel matinal", "menu:rappel").text("\u{1F4CB} Mes abonnements", "menu:mesabonnements").row().text("\u{1F4CD} Centres", "menu:centres").text("\u{1F4CA} Stats", "menu:stats");
+}
+function subscriptionKeyboard(subscribedIds) {
+  const kb = new InlineKeyboard();
+  const emoji = {
+    alger: "\u{1F3D9}\uFE0F",
+    constantine: "\u{1F3DB}\uFE0F",
+    oran: "\u{1F30A}",
+    annaba: "\u{1F332}",
+    tlemcen: "\u{1F54C}"
+  };
+  CENTRES.forEach((c, i) => {
+    const isSubscribed = subscribedIds.includes(c.id);
+    const label = isSubscribed ? `\u2705 ${c.name}` : `${emoji[c.id] ?? "\u{1F4CD}"} ${c.name}`;
+    const callbackData = isSubscribed ? `arreter:${c.id}` : `suivre:${c.id}`;
+    kb.text(label, callbackData);
+    if ((i + 1) % 2 === 0) kb.row();
+  });
+  kb.row().text("\u{1F514} Tout suivre", "suivre:tous");
+  return kb;
+}
+function backToMenuKeyboard() {
+  return new InlineKeyboard().text("\u25C0\uFE0F Menu principal", "menu:accueil");
 }
 
 // src/bot/index.ts
@@ -34625,6 +34770,38 @@ ${list}
       reply_markup: backToMenuKeyboard()
     });
   });
+  bot.command("rappel", async (ctx) => {
+    const chatId = ctx.chat.id;
+    const subs = getUserSubscriptions(chatId);
+    if (subs.length === 0) {
+      return ctx.reply(
+        "\u{1F4ED} <b>Aucun abonnement actif</b>\n\nAbonnez-vous \xE0 un centre d'abord pour recevoir le rappel matinal.",
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    }
+    const isNowEnabled = toggleDailyReminder(chatId);
+    if (isNowEnabled) {
+      return ctx.reply(
+        `\u2600\uFE0F <b>Rappel matinal activ\xE9 !</b>
+
+Chaque matin \xE0 <b>8h00</b>, vous recevrez un briefing avec :
+  \u2022 Les probabilit\xE9s d'ouverture du jour pour vos centres
+  \u2022 L'heure conseill\xE9e pour surveiller
+  \u2022 Un conseil personnalis\xE9
+
+<i>Tapez /rappel \xE0 nouveau pour le d\xE9sactiver.</i>`,
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    } else {
+      return ctx.reply(
+        `\u{1F515} <b>Rappel matinal d\xE9sactiv\xE9</b>
+
+Vous ne recevrez plus le briefing du matin.
+<i>Tapez /rappel \xE0 nouveau pour le r\xE9activer.</i>`,
+        { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+      );
+    }
+  });
   bot.command("tout", async (ctx) => {
     const chatId = ctx.chat.id;
     let count = 0;
@@ -34703,6 +34880,37 @@ ${list}
         parse_mode: "HTML",
         reply_markup: backToMenuKeyboard()
       });
+    } else if (action === "rappel") {
+      const subs = getUserSubscriptions(ctx.from.id);
+      if (subs.length === 0) {
+        await ctx.editMessageText(
+          "\u{1F4ED} <b>Aucun abonnement actif</b>\n\nAbonnez-vous \xE0 un centre d'abord pour recevoir le rappel matinal.",
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+        return;
+      }
+      const isNowEnabled = toggleDailyReminder(ctx.from.id);
+      if (isNowEnabled) {
+        await ctx.editMessageText(
+          `\u2600\uFE0F <b>Rappel matinal activ\xE9 !</b>
+
+Chaque matin \xE0 <b>8h00</b>, vous recevrez un briefing avec :
+  \u2022 Les probabilit\xE9s d'ouverture du jour pour vos centres
+  \u2022 L'heure conseill\xE9e pour surveiller
+  \u2022 Un conseil personnalis\xE9
+
+<i>Appuyez sur \u2600\uFE0F Rappel matinal \xE0 nouveau pour le d\xE9sactiver.</i>`,
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+      } else {
+        await ctx.editMessageText(
+          `\u{1F515} <b>Rappel matinal d\xE9sactiv\xE9</b>
+
+Vous ne recevrez plus le briefing du matin.
+<i>Appuyez sur \u2600\uFE0F Rappel matinal \xE0 nouveau pour le r\xE9activer.</i>`,
+          { parse_mode: "HTML", reply_markup: backToMenuKeyboard() }
+        );
+      }
     }
   });
   bot.callbackQuery(/^suivre:(.+)$/, async (ctx) => {
@@ -34797,10 +35005,11 @@ async function registerCommands(bot) {
     { command: "start", description: "\u{1F3E0} Menu principal" },
     { command: "suivre", description: "\u{1F514} S'abonner aux alertes d'un centre" },
     { command: "arreter", description: "\u{1F515} Arr\xEAter les alertes d'un centre" },
-    { command: "tout", description: "\u{1F514} S'abonner \xE0 TOUS les centres" },
+    { command: "tout", description: "\u{1F30D} S'abonner \xE0 TOUS les centres" },
     { command: "mesabonnements", description: "\u{1F4CB} Voir mes abonnements actifs" },
     { command: "verifier", description: "\u{1F50D} V\xE9rifier la disponibilit\xE9 maintenant" },
     { command: "prediction", description: "\u{1F52E} Pr\xE9dictions d'ouverture des cr\xE9neaux" },
+    { command: "rappel", description: "\u2600\uFE0F Activer/d\xE9sactiver le briefing matinal" },
     { command: "centres", description: "\u{1F4CD} Liste des centres disponibles" },
     { command: "stats", description: "\u{1F4CA} Statistiques du bot" },
     { command: "aide", description: "\u2753 Aide et informations" }
