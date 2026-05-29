@@ -20,10 +20,13 @@ export function centreSelectionKeyboard(action: "suivre" | "verifier" | "arreter
 export function mainMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔔 S'abonner à un centre", "menu:suivre").row()
+    .text("🌍 Tout suivre d'un coup", "suivre:tous").row()
     .text("🔍 Vérifier maintenant", "menu:verifier").row()
     .text("🔮 Prédictions d'ouverture", "menu:prediction").row()
+    .text("☀️ Rappel matinal", "menu:rappel")
     .text("📋 Mes abonnements", "menu:mesabonnements").row()
-    .text("📍 Tous les centres", "menu:centres");
+    .text("📍 Centres", "menu:centres")
+    .text("📊 Stats", "menu:stats");
 }
 
 export function subscriptionKeyboard(subscribedIds: string[]): InlineKeyboard {
