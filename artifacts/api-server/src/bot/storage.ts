@@ -22,9 +22,11 @@ interface StorageData {
   subscriptions: Subscription[];
   lastAvailability: Record<string, boolean>;
   detectionHistory: DetectionEvent[];
+  dailyReminderOptOut: number[];
   stats: {
     totalAlertsSent: number;
     totalChecks: number;
+    totalRemindersSent: number;
   };
 }
 
@@ -38,7 +40,7 @@ function ensureDataDir() {
 function load(): StorageData {
   ensureDataDir();
   if (!fs.existsSync(DATA_FILE)) {
-    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], dailyReminderOptOut: [], stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0 } };
   }
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf-8");
@@ -47,16 +49,48 @@ function load(): StorageData {
       subscriptions: parsed.subscriptions ?? [],
       lastAvailability: parsed.lastAvailability ?? {},
       detectionHistory: parsed.detectionHistory ?? [],
-      stats: parsed.stats ?? { totalAlertsSent: 0, totalChecks: 0 },
+      dailyReminderOptOut: parsed.dailyReminderOptOut ?? [],
+      stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0, ...parsed.stats },
     };
   } catch {
-    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], stats: { totalAlertsSent: 0, totalChecks: 0 } };
+    return { subscriptions: [], lastAvailability: {}, detectionHistory: [], dailyReminderOptOut: [], stats: { totalAlertsSent: 0, totalChecks: 0, totalRemindersSent: 0 } };
   }
 }
 
 function save(data: StorageData) {
   ensureDataDir();
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf-8");
+}
+
+export function toggleDailyReminder(chatId: number): boolean {
+  const data = load();
+  const idx = data.dailyReminderOptOut.indexOf(chatId);
+  if (idx === -1) {
+    data.dailyReminderOptOut.push(chatId);
+    save(data);
+    return false; // now opted OUT
+  } else {
+    data.dailyReminderOptOut.splice(idx, 1);
+    save(data);
+    return true; // now opted IN
+  }
+}
+
+export function hasDailyReminder(chatId: number): boolean {
+  const data = load();
+  return !data.dailyReminderOptOut.includes(chatId);
+}
+
+export function getAllDailyReminderRecipients(): number[] {
+  const data = load();
+  const allUsers = [...new Set(data.subscriptions.map((s) => s.chatId))];
+  return allUsers.filter((id) => !data.dailyReminderOptOut.includes(id));
+}
+
+export function incrementRemindersSent(count = 1) {
+  const data = load();
+  data.stats.totalRemindersSent = (data.stats.totalRemindersSent ?? 0) + count;
+  save(data);
 }
 
 export function addSubscription(chatId: number, centreId: string, centreName: string): boolean {
