@@ -9,8 +9,12 @@ import {
   recordDetection,
   incrementAlertsSent,
   incrementChecks,
+  getAllDailyReminderRecipients,
+  getUserSubscriptions,
+  incrementRemindersSent,
 } from "./storage.js";
 import { getCentreById, CENTRES } from "./centres.js";
+import { buildMorningBriefing } from "./predictions.js";
 import { logger } from "../lib/logger.js";
 
 function buildAlertMessage(centreName: string, slots: string[]): string {
@@ -52,8 +56,46 @@ function buildRecoveryMessage(centreName: string): string {
 }
 
 export function startScheduler(bot: Bot) {
-  logger.info("Starting VFS appointment scheduler (every 3 minutes)");
+  logger.info("Starting VFS appointment scheduler (every 3 minutes) + daily briefing (08:00 Algeria)");
 
+  // ── Rappel matinal quotidien — 8h00 heure d'Algérie (7h00 UTC) ─────────
+  cron.schedule("0 7 * * *", async () => {
+    logger.info("Daily morning briefing — sending to all opted-in subscribers");
+
+    const recipients = getAllDailyReminderRecipients();
+    if (recipients.length === 0) {
+      logger.info("No daily reminder recipients");
+      return;
+    }
+
+    let sent = 0;
+    for (const chatId of recipients) {
+      try {
+        const subs = getUserSubscriptions(chatId);
+        if (subs.length === 0) continue;
+
+        const centreIds = [...new Set(subs.map((s) => s.centreId))];
+        const centreNames: Record<string, string> = {};
+        for (const s of subs) centreNames[s.centreId] = s.centreName;
+
+        const briefing = buildMorningBriefing(centreIds, centreNames);
+        await bot.api.sendMessage(chatId, briefing, {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+        });
+        sent++;
+      } catch (err) {
+        logger.error({ err, chatId }, "Failed to send daily briefing");
+      }
+      // Petite pause pour ne pas saturer l'API Telegram
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    incrementRemindersSent(sent);
+    logger.info({ sent }, "Daily morning briefing sent");
+  }, { timezone: "Africa/Algiers" });
+
+  // ── Vérification toutes les 3 minutes ────────────────────────────────────
   cron.schedule("*/3 * * * *", async () => {
     logger.info("Scheduler tick — checking subscribed centres");
     incrementChecks();
